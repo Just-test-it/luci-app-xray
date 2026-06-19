@@ -18,23 +18,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - id: 23.05
-            arch: x86_64
-            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64
-            sdk_name: -sdk-23.05.5-x86-64_
           - id: 25.12
-            arch: x86_64
-            sdk_url_path: https://downloads.openwrt.org/releases/25.12.2/targets/x86/64
-            sdk_name: -sdk-25.12.2-x86-64_
+            arch: aarch64_cortex-a53
+            target: qualcommax/ipq60xx
+            sdk_name: -sdk-25.12.4-qualcommax-ipq60xx_
 
     env:
-      SDK_URL_PATH: ${{ matrix.sdk_url_path }}
+      SDK_URL_PATH: https://downloads.openwrt.org/releases/25.12.4/targets/${{ matrix.target }}
       SDK_NAME: ${{ matrix.sdk_name }}
       CCACHE_DIR: ~/.ccache
       CONFIG_CCACHE: y
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Prepare Cache Key
         id: cache_key
@@ -49,24 +46,25 @@ jobs:
           key: openwrt-${{ matrix.arch }}-${{ matrix.id }}-${{ env.PACKAGE_NAME }}-${{ steps.cache_key.outputs.timestamp }}
           restore-keys: |
             openwrt-${{ matrix.arch }}-${{ matrix.id }}-${{ env.PACKAGE_NAME }}-
+
       - name: Install Dependencies
         run: |
-          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y ccache gettext libncurses5-dev xsltproc zstd
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y \
+            ccache gettext libncurses5-dev xsltproc zstd
+
       - name: Create Directories
         run: |
           CACHE_DIR_SDK="$(eval echo "$CACHE_DIR/sdk")"
           CACHE_DIR_DL="$(eval echo "$CACHE_DIR/dl")"
           CACHE_DIR_FEEDS="$(eval echo "$CACHE_DIR/feeds")"
-          echo "CACHE_DIR_SDK: $CACHE_DIR_SDK"
-          echo "CACHE_DIR_DL: $CACHE_DIR_DL"
-          echo "CACHE_DIR_FEEDS: $CACHE_DIR_FEEDS"
-          test -d "$CACHE_DIR_SDK" || mkdir -p "$CACHE_DIR_SDK"
-          test -d "$CACHE_DIR_DL" || mkdir -p "$CACHE_DIR_DL"
+          test -d "$CACHE_DIR_SDK"   || mkdir -p "$CACHE_DIR_SDK"
+          test -d "$CACHE_DIR_DL"    || mkdir -p "$CACHE_DIR_DL"
           test -d "$CACHE_DIR_FEEDS" || mkdir -p "$CACHE_DIR_FEEDS"
-          echo "CACHE_DIR_SDK=$CACHE_DIR_SDK" >> $GITHUB_ENV
-          echo "CACHE_DIR_DL=$CACHE_DIR_DL" >> $GITHUB_ENV
+          echo "CACHE_DIR_SDK=$CACHE_DIR_SDK"     >> $GITHUB_ENV
+          echo "CACHE_DIR_DL=$CACHE_DIR_DL"       >> $GITHUB_ENV
           echo "CACHE_DIR_FEEDS=$CACHE_DIR_FEEDS" >> $GITHUB_ENV
-          echo "SDK_HOME=$(mktemp -d)" >> $GITHUB_ENV
+          echo "SDK_HOME=$(mktemp -d)"             >> $GITHUB_ENV
+
       - name: Download and Unzip SDK
         run: |
           cd "$CACHE_DIR_SDK"
@@ -86,16 +84,17 @@ jobs:
           file "$CACHE_DIR_SDK/$SDK_FILE"
           tar -C "$SDK_HOME" --strip=1 -xf "$CACHE_DIR_SDK/$SDK_FILE"
           cd "$SDK_HOME"
-          test -d "dl" && rm -rf "dl" || true
+          test -d "dl"    && rm -rf "dl"    || true
           test -d "feeds" && rm -rf "feeds" || true
-          ln -s "$CACHE_DIR_DL" "dl"
+          ln -s "$CACHE_DIR_DL"    "dl"
           ln -s "$CACHE_DIR_FEEDS" "feeds"
           cp feeds.conf.default feeds.conf
           sed -i 's#git.openwrt.org/openwrt/openwrt#github.com/openwrt/openwrt#' feeds.conf
-          sed -i 's#git.openwrt.org/feed/packages#github.com/openwrt/packages#' feeds.conf
-          sed -i 's#git.openwrt.org/project/luci#github.com/openwrt/luci#' feeds.conf
+          sed -i 's#git.openwrt.org/feed/packages#github.com/openwrt/packages#'  feeds.conf
+          sed -i 's#git.openwrt.org/project/luci#github.com/openwrt/luci#'       feeds.conf
           sed -i 's#git.openwrt.org/feed/telephony#github.com/openwrt/telephony#' feeds.conf
           cd -
+
       - name: Update and Install Packages
         run: |
           cd "$SDK_HOME"
@@ -103,26 +102,33 @@ jobs:
           ln -s "${{ github.workspace }}" "package/$PACKAGE_NAME"
           ./scripts/feeds install -a
           cd -
+
       - name: Build Packages
         run: |
           cd "$SDK_HOME"
           make defconfig
-          make package/${PACKAGE_NAME}/status/{clean,compile} V=s
-          find "$SDK_HOME/bin/" -type f \( -name "*.ipk" -o -name "*.apk" \) -exec ls -lh {} \;
+          # 强制启用 apk 包管理器（25.12 默认值，但 defconfig 可能覆盖）
+          echo "CONFIG_USE_APK=y" >> .config
+          make defconfig
+          make package/${PACKAGE_NAME}/{clean,compile} V=s
+          echo "--- 产物列表 ---"
+          find "$SDK_HOME/bin/" -type f -name "*.apk" -exec ls -lh {} \;
           cd -
+
       - name: Copy Bin Files
         run: |
-          find "$SDK_HOME/bin/" -type f \( -name "${PACKAGE_NAME}*.ipk" -o -name "${PACKAGE_NAME}*.apk" \) | while read -r f; do
+          # 只复制 .apk，不再处理 .ipk
+          find "$SDK_HOME/bin/" -type f -name "${PACKAGE_NAME}*.apk" | while read -r f; do
             base="$(basename "$f")"
-            cp "$f" "${{ github.workspace }}/${base%.*}-${{ matrix.arch }}.${base##*.}"
+            cp "$f" "${{ github.workspace }}/${base%.*}-${{ matrix.arch }}.apk"
           done
-          find "${{ github.workspace }}" -maxdepth 1 -type f \( -name "*.ipk" -o -name "*.apk" \) -exec ls -lh {} \;
+          echo "--- 待上传文件 ---"
+          find "${{ github.workspace }}" -maxdepth 1 -type f -name "*.apk" -exec ls -lh {} \;
+
       - name: Release and Upload Assets
         uses: softprops/action-gh-release@v1
         with:
-          files: |
-            *.ipk
-            *.apk
+          files: "*.apk"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
