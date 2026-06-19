@@ -110,7 +110,8 @@ jobs:
           # 强制启用 apk 包管理器（25.12 默认值，但 defconfig 可能覆盖）
           echo "CONFIG_USE_APK=y" >> .config
           make defconfig
-          make package/${PACKAGE_NAME}/{clean,compile} V=s
+          make package/${PACKAGE_NAME}/clean V=s
+          make package/${PACKAGE_NAME}/compile V=s
           echo "--- 产物列表 ---"
           find "$SDK_HOME/bin/" -type f -name "*.apk" -exec ls -lh {} \;
           cd -
